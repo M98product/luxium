@@ -56,7 +56,12 @@ export default async function handler(req, res) {
     const call = model => fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-      body: JSON.stringify({ model, messages: [{ role: "system", content: SYSTEM }, ...messages], max_tokens: 120, temperature: 0.9 }),
+      body: JSON.stringify({
+        model, messages: [{ role: "system", content: SYSTEM }, ...messages],
+        // certains modèles "réfléchissent" avant de répondre : on leur laisse de la place, sinon la réponse est vide
+        max_tokens: 1000, temperature: 0.9,
+        ...(/gpt-oss|qwen|deepseek/i.test(model) ? { reasoning_effort: "low" } : {}),
+      }),
     });
     let r = await call(model || MODEL);
     if (r.status === 404 || r.status === 400) {
@@ -70,7 +75,13 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: "erreur IA " + r.status, detail });
     }
     const data = await r.json();
-    return res.status(200).json({ reply: data.choices?.[0]?.message?.content || "..." });
+    let reply = (data.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    // garde-fou : réponse courte (coupée proprement vers 260 caractères)
+    if (reply.length > 260) {
+      const cut = reply.slice(0, 260), end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("? "), cut.lastIndexOf("! "));
+      reply = end > 60 ? cut.slice(0, end + 1) : cut.trim() + "...";
+    }
+    return res.status(200).json({ reply: reply || "...static. ask me again." });
   } catch {
     return res.status(502).json({ error: "IA injoignable" });
   }
